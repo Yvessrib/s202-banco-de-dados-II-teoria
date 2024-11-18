@@ -74,7 +74,8 @@ cassandra_session.row_factory = dict_factory # Returning dict from Cassandra
 cassandra_session.set_keyspace('ks') # Change to your keyspace
 
 redis_conn = redis.Redis(
-    host="...", port=0, #Use your Redis instance host and port
+    host="redis-container",  # Nome do contêiner Docker
+    port=6379, #Use your Redis instance host and port
     #username="default", # use your Redis user. 
     #password="...", # use your Redis password
     decode_responses=True
@@ -84,8 +85,47 @@ redis_conn = redis.Redis(
 redis_conn.flushall() #Clear Redis database 
 # -------------------------------------------------------
 
+
 # Questão 1
 def questao_1_a(users):
+
+    insert_query = """
+    INSERT INTO usuarios (id, estado, cidade, endereco, nome, email, interesses)
+    VALUES (%s, %s, %s, %s, %s, %s, %s);
+    """
+
+    for user in users:
+        cassandra_session.execute(
+            insert_query,
+            (
+                user["id"],
+                user["estado"],
+                user["cidade"],
+                user["endereco"],
+                user["nome"],
+                user["email"],
+                user["interesses"],
+            )
+        )
+
+    select_query = "SELECT * FROM usuarios;"
+    rows = cassandra_session.execute(select_query)
+
+    # Armazenar os resultados em uma lista de dicionários
+    users = []
+    for row in rows:
+        users.append({
+            "id": row["id"],
+            "estado": row["estado"],
+            "cidade": row["cidade"],
+            "endereco": row["endereco"],
+            "nome": row["nome"],
+            "email": row["email"],
+            "interesses": row["interesses"]
+        })
+
+    return users
+
     pass
 
 def test_questao_1_a():
@@ -100,7 +140,46 @@ def test_questao_1_a():
     assert len(users) == questao_1_a(users)
 
 def questao_1_b(products):
+
+    # Inserção de produtos
+    insert_query = """
+    INSERT INTO produtos (id, categoria, nome, custo, preco, quantidade)
+    VALUES (%s, %s, %s, %s, %s, %s);
+    """
+    for product in products:
+        cassandra_session.execute(
+            insert_query,
+            (
+                product["id"],
+                product["categoria"],
+                product["nome"],
+                product["custo"],
+                product["preco"],
+                product["quantidade"],
+            )
+        )
+
+    select_query = "SELECT custo, quantidade FROM produtos;"
+    rows = cassandra_session.execute(select_query)
+    total_cost = sum(row.custo * row.quantidade for row in rows)
+
+    return total_cost
+
     pass
+
+
+# Lista de produtos
+products = [
+    {"id": 1, "categoria": "escritório", "nome": "Cadeira HM conforto", "custo": 2000.00, "preco": 3500.00, "quantidade": 120},
+    {"id": 2, "categoria": "culinária", "nome": "Tábua de corte Hawk", "custo": 360.00, "preco": 559.90, "quantidade": 40},
+    {"id": 3, "categoria": "tecnologia", "nome": "Notebook X", "custo": 3000.00, "preco": 4160.99, "quantidade": 76},
+    {"id": 4, "categoria": "games", "nome": "Headset W", "custo": 265.45, "preco": 422.80, "quantidade": 88},
+    {"id": 5, "categoria": "tecnologia", "nome": "Smartphone X", "custo": 2000.00, "preco": 3500.00, "quantidade": 120},
+    {"id": 6, "categoria": "games", "nome": "Gamepad Y", "custo": 256.00, "preco": 519.99, "quantidade": 40},
+    {"id": 7, "categoria": "estética", "nome": "Base Ismusquim", "custo": 50.00, "preco": 120.39, "quantidade": 76},
+    {"id":8, "categoria": "cerveja", "nome":"Gutten Bier IPA 600ml", "custo": 65.45, "preco": 122.80, "quantidade": 88}
+]
+
 
 def teste_questao_1_b():
     products = [
@@ -120,8 +199,39 @@ def teste_questao_1_b():
 
 # Questão 2
 def questao_2(state):
-    pass
 
+    # Consulta no Cassandra para obter os usuários de Minas Gerais
+    select_query = """
+    SELECT id, estado, cidade, endereco, nome, email, interesses
+    FROM usuarios
+    WHERE estado = %s;
+    """
+    rows = cassandra_session.execute(select_query, (state,))
+
+    # Registro no Redis
+    for row in rows:
+        user_key = f"user:{row.id}"  # Chave única para o usuário no Redis
+        user_data = {
+            "id": row.id,
+            "estado": row.estado,
+            "cidade": row.cidade,
+            "endereco": row.endereco,
+            "nome": row.nome,
+            "email": row.email,
+            "interesses": ",".join(row.interesses),  # Lista convertida para string
+        }
+        redis_conn.hmset(user_key, user_data)  # Insere o hash no Redis
+
+    # Consulta no Redis para obter os usuários de Minas Gerais
+    users = []
+    for row in rows:
+        user_key = f"user:{row.id}"
+        user_data = redis_conn.hgetall(user_key)
+        user_data["id"] = int(user_data["id"])  # Convertendo para inteiro
+        user_data["interesses"] = user_data["interesses"].split(",")  # Convertendo para lista
+        users.append(user_data)
+
+    return users
 
 def test_questao_2():
 
@@ -138,7 +248,28 @@ def test_questao_2():
 
 # Questão 3
 def questao_3(user_id):
-    pass
+
+    user_key = f"user:{user_id}"
+    user_data = redis_conn.hgetall(user_key)
+
+    if not user_data:
+        raise ValueError(f"Usuário com ID {user_id} não encontrado no Redis.")
+
+    interests = user_data[b"interesses"].decode("utf-8").split(",")
+
+    products = []
+    for interest in interests:
+        select_query = """
+            SELECT id, nome, preco 
+            FROM produtos 
+            WHERE categoria = %s;
+        """
+        rows = cassandra_session.execute(select_query, (interest,))
+
+        for row in rows:
+            products.append({"id": row.id, "nome": row.nome, "preco": row.preco})
+
+    return products
 
 def test_questao_3():
 
@@ -184,5 +315,5 @@ def test_questao_5():
     assert sales == questao_5(user_id, date_time)
 
 
-# cassandra_session.shutdown()
-# redis_conn.close()
+cassandra_session.shutdown()
+redis_conn.close()
